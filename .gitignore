@@ -1,0 +1,7 @@
+venv/
+__pycache__/
+.claude/
+data/mnist_test_seq.npy
+data/train-images-idx3-ubyte.gz
+data/cloud/
+*.log

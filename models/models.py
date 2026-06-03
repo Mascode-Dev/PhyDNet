@@ -9,10 +9,10 @@ class PhyCell_Cell(nn.Module):
         self.kernel_size = kernel_size
         self.padding     = kernel_size[0] // 2, kernel_size[1] // 2
         self.bias = bias
-        
+
         self.F = nn.Sequential()
         self.F.add_module('conv1', nn.Conv2d(in_channels=input_dim, out_channels=F_hidden_dim, kernel_size=self.kernel_size, stride=(1,1), padding=self.padding))
-        self.F.add_module('bn1',nn.GroupNorm( 7 ,F_hidden_dim))        
+        self.F.add_module('bn1',nn.GroupNorm( 7 ,F_hidden_dim))
         self.F.add_module('conv2', nn.Conv2d(in_channels=F_hidden_dim, out_channels=input_dim, kernel_size=(1,1), stride=(1,1), padding=(0,0)))
 
         self.convgate = nn.Conv2d(in_channels=self.input_dim + self.input_dim,
@@ -20,12 +20,40 @@ class PhyCell_Cell(nn.Module):
                               kernel_size=(3,3),
                               padding=(1,1), bias=self.bias)
 
-    def forward(self, x, hidden): # x [batch_size, hidden_dim, height, width]      
+        self.velocity_scale = nn.Parameter(torch.tensor(1.0))
+
+    def advect(self, hidden, velocity):
+        """Spatially shift hidden state by velocity using grid_sample (advection)."""
+        batch, ch, h, w = hidden.shape
+        vx = velocity[:, 0]  # (batch,)
+        vy = velocity[:, 1]  # (batch,)
+
+        # Create normalized meshgrid [-1, 1]
+        grid_y, grid_x = torch.meshgrid(
+            torch.linspace(-1, 1, h, device=hidden.device),
+            torch.linspace(-1, 1, w, device=hidden.device),
+            indexing='ij'
+        )
+        grid = torch.stack([grid_x, grid_y], dim=-1)  # (h, w, 2)
+        grid = grid.unsqueeze(0).expand(batch, -1, -1, -1).clone()  # (batch, h, w, 2)
+
+        # Shift grid by velocity (normalized, scaled by learnable param)
+        scale = self.velocity_scale / max(h, w)
+        grid[..., 0] += vx.view(-1, 1, 1) * scale
+        grid[..., 1] += vy.view(-1, 1, 1) * scale
+
+        return torch.nn.functional.grid_sample(hidden, grid, align_corners=True, padding_mode='border')
+
+    def forward(self, x, hidden, velocity=None): # x [batch_size, hidden_dim, height, width]
+        # Apply advection if velocity is provided
+        if velocity is not None:
+            hidden = self.advect(hidden, velocity)
+
         combined = torch.cat([x, hidden], dim=1)  # concatenate along channel axis
         combined_conv = self.convgate(combined)
         K = torch.sigmoid(combined_conv)
         hidden_tilde = hidden + self.F(hidden)        # prediction
-        next_hidden = hidden_tilde + K * (x-hidden_tilde)   # correction , Haddamard product     
+        next_hidden = hidden_tilde + K * (x-hidden_tilde)   # correction , Haddamard product
         return next_hidden
 
 class PhyCell(nn.Module):
@@ -47,16 +75,16 @@ class PhyCell(nn.Module):
         self.cell_list = nn.ModuleList(cell_list)
         
        
-    def forward(self, input_, first_timestep=False): # input_ [batch_size, 1, channels, width, height]    
+    def forward(self, input_, first_timestep=False, velocity=None): # input_ [batch_size, 1, channels, width, height]
         batch_size = input_.data.size()[0]
-        if (first_timestep):   
+        if (first_timestep):
             self.initHidden(batch_size) # init Hidden at each forward start
-              
+
         for j,cell in enumerate(self.cell_list):
             if j==0: # bottom layer
-                self.H[j] = cell(input_, self.H[j])
+                self.H[j] = cell(input_, self.H[j], velocity)
             else:
-                self.H[j] = cell(self.H[j-1],self.H[j])
+                self.H[j] = cell(self.H[j-1],self.H[j], velocity)
         
         return self.H , self.H 
     
@@ -258,16 +286,16 @@ class EncoderRNN(torch.nn.Module):
         self.phycell = phycell.to(device)
         self.convcell = convcell.to(device)
 
-    def forward(self, input, first_timestep=False, decoding=False):
+    def forward(self, input, first_timestep=False, decoding=False, velocity=None):
         input = self.encoder_E(input) # general encoder 64x64x1 -> 32x32x32
-    
+
         if decoding:  # input=None in decoding phase
             input_phys = None
         else:
             input_phys = self.encoder_Ep(input)
-        input_conv = self.encoder_Er(input)     
+        input_conv = self.encoder_Er(input)
 
-        hidden1, output1 = self.phycell(input_phys, first_timestep)
+        hidden1, output1 = self.phycell(input_phys, first_timestep, velocity)
         hidden2, output2 = self.convcell(input_conv, first_timestep)
 
         decoded_Dp = self.decoder_Dp(output1[-1])

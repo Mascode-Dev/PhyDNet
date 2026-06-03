@@ -65,6 +65,8 @@ class MovingMNIST(data.Dataset):
 
         start_y = np.zeros(seq_length)
         start_x = np.zeros(seq_length)
+        vel_y = np.zeros(seq_length)
+        vel_x = np.zeros(seq_length)
         for i in range(seq_length):
             # Take a step along velocity.
             y += v_y * self.step_length_
@@ -85,20 +87,26 @@ class MovingMNIST(data.Dataset):
                 v_y = -v_y
             start_y[i] = y
             start_x[i] = x
+            vel_x[i] = v_x * self.step_length_
+            vel_y[i] = v_y * self.step_length_
 
         # Scale to the size of the canvas.
         start_y = (canvas_size * start_y).astype(np.int32)
         start_x = (canvas_size * start_x).astype(np.int32)
-        return start_y, start_x
+        return start_y, start_x, vel_y, vel_x
 
     def generate_moving_mnist(self, num_digits=2):
         '''
         Get random trajectories for the digits and generate a video.
         '''
         data = np.zeros((self.n_frames_total, self.image_size_, self.image_size_), dtype=np.float32)
+        all_vel_x = np.zeros((num_digits, self.n_frames_total), dtype=np.float32)
+        all_vel_y = np.zeros((num_digits, self.n_frames_total), dtype=np.float32)
         for n in range(num_digits):
             # Trajectory
-            start_y, start_x = self.get_random_trajectory(self.n_frames_total)
+            start_y, start_x, vel_y, vel_x = self.get_random_trajectory(self.n_frames_total)
+            all_vel_x[n] = vel_x
+            all_vel_y[n] = vel_y
             ind = random.randint(0, self.mnist.shape[0] - 1)
             digit_image = self.mnist[ind]
             for i in range(self.n_frames_total):
@@ -109,8 +117,13 @@ class MovingMNIST(data.Dataset):
                 # Draw digit
                 data[i, top:bottom, left:right] = np.maximum(data[i, top:bottom, left:right], digit_image)
 
+        # Aggregate velocity: mean across all digits per frame
+        mean_vel_x = all_vel_x.mean(axis=0)  # (n_frames_total,)
+        mean_vel_y = all_vel_y.mean(axis=0)  # (n_frames_total,)
+        velocities = np.stack([mean_vel_x, mean_vel_y], axis=-1)  # (n_frames_total, 2)
+
         data = data[..., np.newaxis]
-        return data
+        return data, velocities
 
     def __getitem__(self, idx):
         length = self.n_frames_input + self.n_frames_output
@@ -118,9 +131,11 @@ class MovingMNIST(data.Dataset):
             # Sample number of objects
             num_digits = random.choice(self.num_objects)
             # Generate data on the fly
-            images = self.generate_moving_mnist(num_digits)
+            images, velocities = self.generate_moving_mnist(num_digits)
         else:
             images = self.dataset[:, idx, ...]
+            # Estimate velocity from frame differencing (center-of-mass)
+            velocities = self._estimate_velocities(images.squeeze(-1))  # (n_frames_total, 2)
 
         # if self.transform is not None:
         #     images = self.transform(images)
@@ -135,24 +150,43 @@ class MovingMNIST(data.Dataset):
         else:
             output = []
 
+        input_velocity = velocities[:self.n_frames_input]
+        if self.n_frames_output > 0:
+            output_velocity = velocities[self.n_frames_input:length]
+        else:
+            output_velocity = []
+
         frozen = input[-1]
-        # add a wall to input data
-        # pad = np.zeros_like(input[:, 0])
-        # pad[:, 0] = 1
-        # pad[:, pad.shape[1] - 1] = 1
-        # pad[:, :, 0] = 1
-        # pad[:, :, pad.shape[2] - 1] = 1
-        #
-        # input = np.concatenate((input, np.expand_dims(pad, 1)), 1)
 
         output = torch.from_numpy(output / 255.0).contiguous().float()
         input = torch.from_numpy(input / 255.0).contiguous().float()
-        # print()
-        # print(input.size())
-        # print(output.size())
+        input_velocity = torch.from_numpy(input_velocity).contiguous().float()
+        output_velocity = torch.from_numpy(output_velocity).contiguous().float()
 
-        out = [idx,input,output]
+        out = [idx, input, output, input_velocity, output_velocity]
         return out
+
+    def _estimate_velocities(self, frames):
+        """Estimate velocity from center-of-mass frame differencing for test set."""
+        n_frames = frames.shape[0]
+        velocities = np.zeros((n_frames, 2), dtype=np.float32)
+        yy, xx = np.mgrid[0:frames.shape[1], 0:frames.shape[2]]
+        for i in range(1, n_frames):
+            prev = frames[i - 1].astype(np.float32)
+            curr = frames[i].astype(np.float32)
+            prev_sum = prev.sum()
+            curr_sum = curr.sum()
+            if prev_sum > 0 and curr_sum > 0:
+                prev_cx = (xx * prev).sum() / prev_sum
+                prev_cy = (yy * prev).sum() / prev_sum
+                curr_cx = (xx * curr).sum() / curr_sum
+                curr_cy = (yy * curr).sum() / curr_sum
+                velocities[i, 0] = (curr_cx - prev_cx) / self.image_size_
+                velocities[i, 1] = (curr_cy - prev_cy) / self.image_size_
+        # Frame 0 velocity = frame 1 velocity
+        if n_frames > 1:
+            velocities[0] = velocities[1]
+        return velocities
 
     def __len__(self):
         return self.length

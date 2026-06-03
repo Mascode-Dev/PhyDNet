@@ -1,0 +1,18 @@
+PhyDNet — Velocity-Augmented Results
+====================================
+
+## Moving MNIST (6400 test samples, 100 epochs each)
+
+With velocity:    MSE = 0.0107, SSIM = 0.883, velocity_scale = 10.23
+Without velocity: MSE = 0.0124, SSIM = 0.857
+Improvement:      MSE -13.8%, SSIM +0.026
+
+Worst-case sequence (idx 4397):
+  With velocity:    MSE = 0.0089
+  Without velocity: MSE = 0.0369
+  Gap: 4.2x
+
+## GOES-16 WSI Cloud (11 test sequences, 50 epochs)
+
+With velocity:    MSE = 0.0041, velocity_scale = 0.996
+Without velocity: MSE = 0.0033 (inconclusive — only 42 train sequences)

@@ -1,0 +1,44 @@
+\documentclass[11pt,a4paper]{article}
+
+% Packages
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{booktabs}
+\usepackage{hyperref}
+\usepackage{geometry}
+\usepackage{setspace}
+\usepackage{authblk}
+
+\geometry{margin=2.5cm}
+
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue,
+    citecolor=blue,
+    urlcolor=blue
+}
+
+% Title and authors
+\title{\textbf{Velocity-Augmented PhyDNet for Physics-Informed Video Prediction:\\A Validation Study on Moving MNIST}}
+
+\author[1]{Thomas Jego}
+\author[2]{Yiru Zhang}
+\affil[1]{Affiliation of Thomas Jego}
+\affil[2]{Affiliation of Yiru Zhang}
+
+\date{}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+\noindent
+Short-term solar irradiance forecasting plays a critical role in maintaining power balance within electrical grids with high photovoltaic (PV) penetration. Cloud dynamics are the primary driver of irradiance variability, and ground-based all-sky images provide rich visual information for predicting cloud evolution. However, existing deep learning approaches rarely incorporate known physical quantities such as wind speed, relying instead on learning all dynamics from data alone. We extend PhyDNet, a video prediction model that disentangles physical dynamics from unknown factors through two parallel branches, by injecting velocity information directly into its physics branch via an advection mechanism. Rather than modifying the constrained PDE kernel, we apply a learnable spatial shift to the hidden state before prediction, directly modeling feature transport by the velocity field. This adds only one learnable parameter while preserving the original architecture and its moment constraints. We validate the approach on the Moving MNIST dataset, where ground-truth digit velocities are extracted from the trajectory generator. Over 100 training epochs, the velocity-augmented model achieves a 13.9\% reduction in MSE and a 3.1\% improvement in SSIM compared to the baseline, with 40--50\% faster convergence. The learned velocity scale converges to 10.23, confirming the model actively exploits the velocity signal. These results establish a foundation for applying the method to real-world sky image prediction using the SKIPP'D dataset, where wind speed measurements will drive cloud advection modeling for PV power forecasting.
+
+\medskip
+\noindent\textbf{Keywords:} video prediction, physics-informed deep learning, velocity injection, advection, cloud nowcasting, photovoltaic forecasting
+\end{abstract}
+
+\end{document}

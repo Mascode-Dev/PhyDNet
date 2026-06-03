@@ -10,7 +10,7 @@ import time
 from models.models import ConvLSTM,PhyCell, EncoderRNN
 from data.moving_mnist import MovingMNIST
 from constrain_moments import K2M
-from skimage.measure import compare_ssim as ssim
+from skimage.metrics import structural_similarity as ssim
 import argparse
 
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
@@ -38,35 +38,35 @@ for i in range(0,7):
         constraints[ind,i,j] = 1
         ind +=1    
 
-def train_on_batch(input_tensor, target_tensor, encoder, encoder_optimizer, criterion,teacher_forcing_ratio):                
+def train_on_batch(input_tensor, target_tensor, input_velocity, output_velocity, encoder, encoder_optimizer, criterion,teacher_forcing_ratio):
     encoder_optimizer.zero_grad()
     # input_tensor : torch.Size([batch_size, input_length, channels, cols, rows])
     input_length  = input_tensor.size(1)
     target_length = target_tensor.size(1)
     loss = 0
-    for ei in range(input_length-1): 
-        encoder_output, encoder_hidden, output_image,_,_ = encoder(input_tensor[:,ei,:,:,:], (ei==0) )
+    for ei in range(input_length-1):
+        encoder_output, encoder_hidden, output_image,_,_ = encoder(input_tensor[:,ei,:,:,:], (ei==0), velocity=input_velocity[:,ei,:])
         loss += criterion(output_image,input_tensor[:,ei+1,:,:,:])
 
     decoder_input = input_tensor[:,-1,:,:,:] # first decoder input = last image of input sequence
-    
-    use_teacher_forcing = True if random.random() < teacher_forcing_ratio else False 
+
+    use_teacher_forcing = True if random.random() < teacher_forcing_ratio else False
     for di in range(target_length):
-        decoder_output, decoder_hidden, output_image,_,_ = encoder(decoder_input)
+        decoder_output, decoder_hidden, output_image,_,_ = encoder(decoder_input, velocity=output_velocity[:,di,:])
         target = target_tensor[:,di,:,:,:]
         loss += criterion(output_image,target)
         if use_teacher_forcing:
-            decoder_input = target # Teacher forcing    
+            decoder_input = target # Teacher forcing
         else:
             decoder_input = output_image
 
     # Moment regularization  # encoder.phycell.cell_list[0].F.conv1.weight # size (nb_filters,in_channels,7,7)
     k2m = K2M([7,7]).to(device)
     for b in range(0,encoder.phycell.cell_list[0].input_dim):
-        filters = encoder.phycell.cell_list[0].F.conv1.weight[:,b,:,:] # (nb_filters,7,7)     
-        m = k2m(filters.double()) 
-        m  = m.float()   
-        loss += criterion(m, constraints) # constrains is a precomputed matrix   
+        filters = encoder.phycell.cell_list[0].F.conv1.weight[:,b,:,:] # (nb_filters,7,7)
+        m = k2m(filters.double())
+        m  = m.float()
+        loss += criterion(m, constraints) # constrains is a precomputed matrix
     loss.backward()
     encoder_optimizer.step()
     return loss.item() / target_length
@@ -77,7 +77,7 @@ def trainIters(encoder, nepochs, print_every=10,eval_every=10,name=''):
     best_mse = float('inf')
 
     encoder_optimizer = torch.optim.Adam(encoder.parameters(),lr=0.001)
-    scheduler_enc = ReduceLROnPlateau(encoder_optimizer, mode='min', patience=2,factor=0.1,verbose=True)
+    scheduler_enc = ReduceLROnPlateau(encoder_optimizer, mode='min', patience=2,factor=0.1)
     criterion = nn.MSELoss()
     
     for epoch in range(0, nepochs):
@@ -88,7 +88,9 @@ def trainIters(encoder, nepochs, print_every=10,eval_every=10,name=''):
         for i, out in enumerate(train_loader, 0):
             input_tensor = out[1].to(device)
             target_tensor = out[2].to(device)
-            loss = train_on_batch(input_tensor, target_tensor, encoder, encoder_optimizer, criterion, teacher_forcing_ratio)                                   
+            input_velocity = out[3].to(device)
+            output_velocity = out[4].to(device)
+            loss = train_on_batch(input_tensor, target_tensor, input_velocity, output_velocity, encoder, encoder_optimizer, criterion, teacher_forcing_ratio)
             loss_epoch += loss
                       
         train_losses.append(loss_epoch)        
@@ -109,17 +111,19 @@ def evaluate(encoder,loader):
         for i, out in enumerate(loader, 0):
             input_tensor = out[1].to(device)
             target_tensor = out[2].to(device)
+            input_velocity = out[3].to(device)
+            output_velocity = out[4].to(device)
             input_length = input_tensor.size()[1]
             target_length = target_tensor.size()[1]
 
             for ei in range(input_length-1):
-                encoder_output, encoder_hidden, _,_,_  = encoder(input_tensor[:,ei,:,:,:], (ei==0))
+                encoder_output, encoder_hidden, _,_,_  = encoder(input_tensor[:,ei,:,:,:], (ei==0), velocity=input_velocity[:,ei,:])
 
             decoder_input = input_tensor[:,-1,:,:,:] # first decoder input= last image of input sequence
             predictions = []
 
             for di in range(target_length):
-                decoder_output, decoder_hidden, output_image,_,_ = encoder(decoder_input, False, False)
+                decoder_output, decoder_hidden, output_image,_,_ = encoder(decoder_input, False, False, velocity=output_velocity[:,di,:])
                 decoder_input = output_image
                 predictions.append(output_image.cpu())
 
@@ -135,7 +139,7 @@ def evaluate(encoder,loader):
             
             for a in range(0,target.shape[0]):
                 for b in range(0,target.shape[1]):
-                    total_ssim += ssim(target[a,b,0,], predictions[a,b,0,]) / (target.shape[0]*target.shape[1]) 
+                    total_ssim += ssim(target[a,b,0,], predictions[a,b,0,], data_range=1.0) / (target.shape[0]*target.shape[1]) 
 
             
             cross_entropy = -target*np.log(predictions) - (1-target) * np.log(1-predictions)
